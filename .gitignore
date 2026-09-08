@@ -1,0 +1,10 @@
+# Secrets & auth — never commit these
+credentials.json
+token.json
+config.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
