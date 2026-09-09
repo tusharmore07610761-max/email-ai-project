@@ -10,8 +10,9 @@ Gmail OAuth client) from a Settings panel — no hardcoded secrets in code.
 
 import functools
 import json
+import os
 
-from flask import Flask, jsonify, redirect, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request, url_for
 
 from email_assistant import (
     load_config,
@@ -61,7 +62,9 @@ def index():
 def auth_start():
     """Redirects the user's browser to Google to authorize Gmail access."""
     try:
-        url = get_auth_url()
+        # Use this app's own /oauth2callback as the redirect URI so Google
+        # always returns here, regardless of what's in the client config.
+        url = get_auth_url(redirect_uri=url_for('oauth2callback', _external=True))
         return redirect(url)
     except Exception as exc:  # noqa: BLE001
         return (
@@ -262,4 +265,4 @@ def _current_account():
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=os.environ.get('FLASK_DEBUG') == '1')

@@ -158,11 +158,31 @@ class OAuthRequired(Exception):
 # The in-progress OAuth flow, kept between /auth/start and /oauth2callback.
 # Safe with a single web worker (see the Render start command).
 _oauth_flow = None
+_oauth_redirect_uri = None
 
 
-def get_auth_url():
-    """Builds the Google authorization URL for the web redirect flow."""
-    global _oauth_flow
+def _registered_redirect_uri():
+    """Returns the first registered redirect URI from the client config."""
+    try:
+        with open(CREDENTIALS_FILE, 'r', encoding='utf-8') as f:
+            cfg = json.load(f)
+        web = (cfg.get('web') or {}).get('redirect_uris') or []
+        installed = (cfg.get('installed') or {}).get('redirect_uris') or []
+        uris = web or installed
+        return uris[0] if uris else None
+    except (ValueError, OSError, IndexError):
+        return None
+
+
+def get_auth_url(redirect_uri=None):
+    """Builds the Google authorization URL for the web redirect flow.
+
+    google_auth_oauthlib does not inject redirect_uri on its own, and calling
+    Google with a missing/mismatched one fails the callback — so we always pass
+    it explicitly. If the caller doesn't supply one (e.g. the app's own
+    /oauth2callback), we fall back to the client config's first registered URI.
+    """
+    global _oauth_flow, _oauth_redirect_uri
     _write_credentials_from_config()
     if not os.path.exists(CREDENTIALS_FILE):
         raise ValueError(
@@ -171,20 +191,39 @@ def get_auth_url():
         )
     _oauth_flow = InstalledAppFlow.from_client_secrets_file(
         CREDENTIALS_FILE, SCOPES)
+    _oauth_redirect_uri = (
+        redirect_uri
+        or _registered_redirect_uri()
+        or os.environ.get('OAUTH_REDIRECT_URI', '')
+    )
+    if not _oauth_redirect_uri:
+        raise ValueError(
+            'No redirect URI available in your credentials.json. Recreate the '
+            'OAuth client and add the /oauth2callback URL under "redirect URIs".'
+        )
+    # Assign on the session (not as a keyword arg) — threading it through
+    # authorization_url() makes oauthlib reject the call with a duplicate.
+    _oauth_flow.oauth2session.redirect_uri = _oauth_redirect_uri
     auth_url, _ = _oauth_flow.authorization_url(
-        access_type='offline', prompt='consent', include_granted_scopes='true')
+        access_type='offline',
+        prompt='consent',
+        include_granted_scopes='true',
+    )
     return auth_url
 
 
 def exchange_oauth_code(code=None, error=None):
     """Completes the OAuth exchange from /oauth2callback and saves the token."""
-    global _oauth_flow
+    global _oauth_flow, _oauth_redirect_uri
     if error or not code:
         _oauth_flow = None
+        _oauth_redirect_uri = None
         raise ValueError(error or 'Gmail authorization rejected.')
     flow = _oauth_flow
+    redirect_uri = _oauth_redirect_uri
     _oauth_flow = None
-    if flow is None:
+    _oauth_redirect_uri = None
+    if flow is None or not redirect_uri:
         raise ValueError(
             'OAuth session expired. Start again from Settings → Connect Gmail.'
         )
@@ -318,7 +357,8 @@ Write a short, professional reply (3-5 sentences). Only output the reply text, n
         if provider == 'openrouter':
             # Lets OpenRouter attribute/rank the app on their site.
             headers = {
-                'HTTP-Referer': 'http://localhost:5000/',
+                'HTTP-Referer': os.environ.get(
+                    'APP_URL', 'http://localhost:5000/'),
                 'X-Title': 'Reply Desk',
             }
         draft = _generate_openai(prompt, api_key, model, base_url, headers)
