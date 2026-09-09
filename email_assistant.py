@@ -19,9 +19,27 @@ import google.generativeai as genai
 
 # ---------- SETTINGS ----------
 SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
-CONFIG_FILE = 'config.json'
-CREDENTIALS_FILE = 'credentials.json'
-TOKEN_FILE = 'token.json'
+
+# Data files live under DATA_DIR when set (e.g. Render persistent disk /data),
+# otherwise next to the project (local dev).
+DATA_DIR = os.environ.get('DATA_DIR', '').strip()
+
+
+def data_path(name):
+    """Resolves a data-file path: DATA_DIR/<name> or ./<name> when unset."""
+    if not DATA_DIR:
+        return name
+    return os.path.abspath(os.path.join(DATA_DIR, name))
+
+
+def _ensure_data_dir():
+    if DATA_DIR:
+        os.makedirs(DATA_DIR, exist_ok=True)
+
+
+CONFIG_FILE = data_path('config.json')
+CREDENTIALS_FILE = data_path('credentials.json')
+TOKEN_FILE = data_path('token.json')
 
 # Providers the app can route AI drafts through. The user picks one in the
 # Settings panel and pastes their own API key + model name. OpenAI, Qwen and
@@ -75,6 +93,7 @@ def load_config():
 
 def save_config(config):
     """Persists user settings to config.json (kept out of git)."""
+    _ensure_data_dir()
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2)
 
@@ -125,17 +144,61 @@ def _write_credentials_from_config():
         return
     try:
         json.loads(pasted)  # validate it's JSON before writing
+        _ensure_data_dir()
         with open(CREDENTIALS_FILE, 'w', encoding='utf-8') as f:
             f.write(pasted)
     except (ValueError, OSError):
         pass
 
 
-def gmail_authenticate():
-    """Logs into Gmail using credentials.json (opens browser first time).
+class OAuthRequired(Exception):
+    """Raised when Gmail needs to be (re)authorized through the web flow."""
 
-    Uses the user's own OAuth client if they saved one in settings, otherwise
-    the credentials.json already present in the project.
+
+# The in-progress OAuth flow, kept between /auth/start and /oauth2callback.
+# Safe with a single web worker (see the Render start command).
+_oauth_flow = None
+
+
+def get_auth_url():
+    """Builds the Google authorization URL for the web redirect flow."""
+    global _oauth_flow
+    _write_credentials_from_config()
+    if not os.path.exists(CREDENTIALS_FILE):
+        raise ValueError(
+            'No Gmail OAuth client found. Paste your credentials.json in '
+            'Settings → Gmail first.'
+        )
+    _oauth_flow = InstalledAppFlow.from_client_secrets_file(
+        CREDENTIALS_FILE, SCOPES)
+    auth_url, _ = _oauth_flow.authorization_url(
+        access_type='offline', prompt='consent', include_granted_scopes='true')
+    return auth_url
+
+
+def exchange_oauth_code(code=None, error=None):
+    """Completes the OAuth exchange from /oauth2callback and saves the token."""
+    global _oauth_flow
+    if error or not code:
+        _oauth_flow = None
+        raise ValueError(error or 'Gmail authorization rejected.')
+    flow = _oauth_flow
+    _oauth_flow = None
+    if flow is None:
+        raise ValueError(
+            'OAuth session expired. Start again from Settings → Connect Gmail.'
+        )
+    flow.fetch_token(code=code)
+    _ensure_data_dir()
+    with open(TOKEN_FILE, 'w', encoding='utf-8') as f:
+        f.write(flow.credentials.to_json())
+
+
+def gmail_authenticate():
+    """Returns the Gmail service, raising OAuthRequired if a login is needed.
+
+    Authorization now happens in the browser via /auth/start (web UI) instead
+    of the old localhost-only run_local_server flow.
     """
     _write_credentials_from_config()
     creds = None
@@ -150,11 +213,9 @@ def gmail_authenticate():
                 # fresh interactive login from scratch.
                 creds = None
         if not creds:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                CREDENTIALS_FILE, SCOPES)
-            creds = flow.run_local_server(port=0)
-        with open(TOKEN_FILE, 'w') as token:
-            token.write(creds.to_json())
+            raise OAuthRequired(
+                'Gmail authorization needed. Connect Gmail from the web UI.'
+            )
     return build('gmail', 'v1', credentials=creds)
 
 
@@ -287,7 +348,12 @@ def send_reply(service, email, reply_text):
 
 def main():
     print("Connecting to Gmail...")
-    service = gmail_authenticate()
+    try:
+        service = gmail_authenticate()
+    except OAuthRequired as exc:
+        print(f"\n{exc}")
+        print("Open the web UI (python app.py) and connect Gmail there.")
+        return
 
     print("Fetching unread emails...")
     emails = get_unread_emails(service)

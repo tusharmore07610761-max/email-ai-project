@@ -11,7 +11,7 @@ Gmail OAuth client) from a Settings panel — no hardcoded secrets in code.
 import functools
 import json
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, redirect, render_template, request
 
 from email_assistant import (
     load_config,
@@ -21,7 +21,14 @@ from email_assistant import (
     generate_reply,
     send_reply,
     mark_as_read,
+    get_auth_url,
+    exchange_oauth_code,
+    data_path,
+    OAuthRequired,
     SUPPORTED_PROVIDERS,
+    TOKEN_FILE,
+    CREDENTIALS_FILE,
+    SCOPES,
 )
 
 app = Flask(__name__)
@@ -48,6 +55,39 @@ def get_service():
 @app.route('/')
 def index():
     return render_template('index.html')
+
+
+@app.route('/auth/start')
+def auth_start():
+    """Redirects the user's browser to Google to authorize Gmail access."""
+    try:
+        url = get_auth_url()
+        return redirect(url)
+    except Exception as exc:  # noqa: BLE001
+        return (
+            f'<p style="font-family:sans-serif">Cannot start Gmail auth: {exc}</p>'
+            f'<p style="font-family:sans-serif"><a href="/">← Back to Reply Desk</a></p>'
+        ), 400
+
+
+@app.route('/oauth2callback')
+def oauth2callback():
+    """Google redirects here after the user approves; saves the token."""
+    try:
+        exchange_oauth_code(
+            code=request.args.get('code'),
+            error=request.args.get('error'),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return (
+            f'<p style="font-family:sans-serif">Gmail auth failed: {exc}</p>'
+            f'<p style="font-family:sans-serif"><a href="/">← Back to Reply Desk</a></p>'
+        ), 400
+    return (
+        '<p style="font-family:sans-serif">Gmail connected. '
+        'You can close this tab and return to Reply Desk.</p>'
+        '<p style="font-family:sans-serif"><a href="/">→ Back to Reply Desk</a></p>'
+    )
 
 
 @app.route('/api/health')
@@ -119,7 +159,6 @@ def reconnect():
     """Deletes the saved token so the next inbox load triggers a fresh login."""
     global _service
     import os
-    from email_assistant import TOKEN_FILE
     if os.path.exists(TOKEN_FILE):
         os.remove(TOKEN_FILE)
     _service = None
@@ -131,6 +170,11 @@ def reconnect():
 def inbox():
     try:
         service = get_service()
+    except OAuthRequired as exc:
+        return jsonify({
+            'error': str(exc),
+            'oauth_required': True,
+        }), 401
     except Exception as exc:  # noqa: BLE001
         return jsonify({
             'error': 'Gmail auth failed. Open Settings and follow the Gmail setup.',
@@ -195,7 +239,7 @@ def skip():
 
 def _has_file(name):
     import os
-    return os.path.exists(name)
+    return os.path.exists(data_path(name))
 
 
 def _mask(secret):
@@ -207,12 +251,11 @@ def _mask(secret):
 def _current_account():
     """Best-effort read of the Gmail account from token.json."""
     import os
-    if not _has_file('token.json'):
+    if not os.path.exists(TOKEN_FILE):
         return None
     try:
         from google.oauth2.credentials import Credentials as GCreds
-        from email_assistant import SCOPES
-        creds = GCreds.from_authorized_user_file('token.json', SCOPES)
+        creds = GCreds.from_authorized_user_file(TOKEN_FILE, SCOPES)
         return creds.account if creds else None
     except Exception:  # noqa: BLE001
         return None

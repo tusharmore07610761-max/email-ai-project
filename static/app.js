@@ -28,6 +28,7 @@ const gmailCurrentEl = document.getElementById("gmail-current");
 const saveSettingsBtn = document.getElementById("btn-save-settings");
 const testKeyBtn = document.getElementById("btn-test-key");
 const reconnectBtn = document.getElementById("btn-reconnect");
+const connectGmailBtn = document.getElementById("btn-connect-gmail");
 const closeSettingsBtn = document.getElementById("btn-close-settings");
 
 // Model suggestions shown per provider in the settings modal.
@@ -55,7 +56,9 @@ async function api(path, options = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.error || `Request failed (${res.status})`);
+    const err = new Error(data.error || `Request failed (${res.status})`);
+    err.data = data;
+    throw err;
   }
   return data;
 }
@@ -124,6 +127,15 @@ async function loadInbox() {
       renderActive();
     }
   } catch (err) {
+    if (err.data && err.data.oauth_required) {
+      listEl.innerHTML =
+        '<div class="empty">Gmail needs connecting.<br>' +
+        '<button id="empty-connect" class="btn-edit" style="margin-top:10px">Connect Gmail</button></div>';
+      document.getElementById("empty-connect").addEventListener("click", connectGmail);
+      statusEl.classList.add("warn");
+      statusEl.innerHTML = '<span class="dot"></span> Gmail not connected';
+      return;
+    }
     listEl.innerHTML = `<div class="empty">Couldn't load inbox.<br><small>${escapeHtml(err.message)}</small></div>`;
     statusEl.classList.add("warn");
     statusEl.innerHTML = '<span class="dot"></span> Connection error';
@@ -360,14 +372,18 @@ async function reconnectGmail() {
   reconnectBtn.disabled = true;
   try {
     await api("/api/reconnect", { method: "POST" });
-    showToast("Gmail token cleared — reload to re-login");
+    showToast("Gmail token cleared — Connect Gmail to re-login");
     closeSettings();
-    loadInbox();
   } catch (err) {
     showToast(err.message, true);
   } finally {
     reconnectBtn.disabled = false;
   }
+}
+
+function connectGmail() {
+  closeSettings();
+  window.location.href = "/auth/start";
 }
 
 sendBtn.addEventListener("click", sendActive);
@@ -378,6 +394,7 @@ closeSettingsBtn.addEventListener("click", closeSettings);
 saveSettingsBtn.addEventListener("click", saveSettings);
 testKeyBtn.addEventListener("click", testKey);
 reconnectBtn.addEventListener("click", reconnectGmail);
+connectGmailBtn.addEventListener("click", connectGmail);
 providerSelect.addEventListener("change", () => populateModelSuggestions(providerSelect.value));
 overlayEl.addEventListener("click", (e) => {
   if (e.target === overlayEl) closeSettings();
