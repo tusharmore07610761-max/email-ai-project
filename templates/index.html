@@ -234,6 +234,12 @@
     color:#fff;
   }
   .btn-send:hover:not(:disabled){ background:var(--moss); }
+  .btn-generate{
+    background:var(--panel);
+    color:var(--ink);
+    border-color:var(--line);
+  }
+  .btn-generate:hover:not(:disabled){ border-color:#B9B4A2; }
   .btn-skip{
     background:var(--panel);
     color:var(--ink-soft);
@@ -429,8 +435,9 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg>
             Suggested reply
           </div>
-          <textarea id="reply-text" class="reply-text" placeholder="Generating draft…"></textarea>
+          <textarea id="reply-text" class="reply-text" placeholder="No draft yet — click 'Generate reply' to create one."></textarea>
           <div class="actions">
+            <button id="btn-generate" class="btn-generate">Generate reply</button>
             <button id="btn-send" class="btn-send" disabled>Send reply</button>
             <button id="btn-skip" class="btn-skip">Mark read &amp; skip</button>
           </div>
@@ -449,24 +456,36 @@
 <div id="settings-overlay" class="overlay">
   <div class="modal">
     <h2>Settings</h2>
-    <div class="sub">Connect your own Google account and AI key. Nothing is shared or stored anywhere except this local project.</div>
+    <div class="sub">Connect your own Google account and any AI provider. Nothing is shared or stored anywhere except this local project.</div>
 
     <div class="field">
-      <label>Gemini API key</label>
-      <div id="key-current" class="current-val"></div>
-      <input id="set-gemini-key" type="password" placeholder="Paste your Gemini API key (starts with AIza)" autocomplete="off">
-      <div class="hint">Get one free at <b>aistudio.google.com/apikey</b>. Changing it rebuilds drafts with the new key.</div>
+      <label>AI provider</label>
+      <select id="set-provider">
+        <option value="openai">OpenAI</option>
+        <option value="openrouter">OpenRouter</option>
+        <option value="qwen">Qwen (Alibaba)</option>
+        <option value="gemini">Gemini (Google)</option>
+      </select>
     </div>
 
     <div class="field">
-      <label>Gemini model</label>
-      <select id="set-gemini-model">
-        <option value="gemini-3.6-flash">gemini-3.6-flash (recommended)</option>
-        <option value="gemini-2.5-flash">gemini-2.5-flash</option>
-        <option value="gemini-2.5-pro">gemini-2.5-pro</option>
-        <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
-        <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview</option>
-      </select>
+      <label>API key</label>
+      <div id="key-current" class="current-val"></div>
+      <input id="set-api-key" type="password" placeholder="Paste your API key" autocomplete="off">
+      <div class="hint">Paste the key for the provider selected above. Changing it rebuilds drafts with the new key.</div>
+    </div>
+
+    <div class="field">
+      <label>Model</label>
+      <input id="set-model" type="text" list="model-suggestions" placeholder="e.g. gpt-4o-mini, qwen-plus, gemini-3.6-flash" autocomplete="off">
+      <datalist id="model-suggestions"></datalist>
+      <div class="hint">Use any model name your provider supports, e.g. <b>gpt-4o-mini</b>, <b>qwen-plus</b>, <b>qwen-max</b>, <b>gemini-3.6-flash</b>.</div>
+    </div>
+
+    <div class="field">
+      <label>API base URL <span style="text-transform:none;letter-spacing:0">(optional)</span></label>
+      <input id="set-base-url" type="text" placeholder="Defaults to the provider's official endpoint" autocomplete="off">
+      <div class="hint">Only needed for custom OpenAI-compatible endpoints (DeepSeek, Ollama, proxies). Qwen's endpoint is preset automatically.</div>
     </div>
 
     <div class="field">

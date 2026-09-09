@@ -23,9 +23,32 @@ CONFIG_FILE = 'config.json'
 CREDENTIALS_FILE = 'credentials.json'
 TOKEN_FILE = 'token.json'
 
+# Providers the app can route AI drafts through. The user picks one in the
+# Settings panel and pastes their own API key + model name. OpenAI, Qwen and
+# OpenRouter all speak the OpenAI-compatible API, so they share the same client.
+SUPPORTED_PROVIDERS = ('openai', 'qwen', 'openrouter', 'gemini')
+
+# Preset base URLs for each OpenAI-compatible provider. A user can also paste
+# their own base_url to talk to any compatible endpoint (DeepSeek, Ollama, etc.).
+PROVIDER_PRESETS = {
+    'openai': {'base_url': 'https://api.openai.com/v1'},
+    'qwen': {'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1'},
+    'openrouter': {'base_url': 'https://openrouter.ai/api/v1'},
+    'gemini': {},
+}
+
 DEFAULTS = {
-    'gemini_api_key': os.environ.get('GEMINI_API_KEY', ''),
-    'gemini_model': os.environ.get('GEMINI_MODEL', 'gemini-3.6-flash'),
+    'provider': os.environ.get('AI_PROVIDER', 'openai'),
+    # Legacy fallbacks keep old config.json files working after the switch.
+    'api_key': os.environ.get(
+        'AI_API_KEY',
+        os.environ.get('OPENAI_API_KEY', os.environ.get('GEMINI_API_KEY', '')),
+    ),
+    'model': os.environ.get(
+        'AI_MODEL',
+        os.environ.get('OPENAI_MODEL', os.environ.get('GEMINI_MODEL', 'gpt-4o-mini')),
+    ),
+    'base_url': os.environ.get('AI_BASE_URL', ''),
     # The pasted content of a user's own Google Cloud OAuth client JSON,
     # which lets any user use their own Gmail account.
     'gmail_credentials': '',
@@ -41,6 +64,12 @@ def load_config():
                 config.update(json.load(f))
         except (ValueError, OSError):
             pass
+    # Migrate old Gemini-only config to the provider-agnostic shape.
+    if not config.get('api_key') and config.get('gemini_api_key'):
+        config['api_key'] = config['gemini_api_key']
+        config['provider'] = 'gemini'
+    if not config.get('model') and config.get('gemini_model'):
+        config['model'] = config['gemini_model']
     return config
 
 
@@ -50,18 +79,42 @@ def save_config(config):
         json.dump(config, f, indent=2)
 
 
-def _get_model():
-    """Creates a GenerativeModel from the currently configured settings.
-
-    genai is re-configured each call so a user can change their API key and
-    model from the UI without restarting the server.
-    """
+def get_ai_settings():
+    """Returns the current (provider, api_key, model, base_url) tuple."""
     config = load_config()
-    key = config.get('gemini_api_key')
-    model_name = config.get('gemini_model') or DEFAULTS['gemini_model']
-    if key:
-        genai.configure(api_key=key)
-    return genai.GenerativeModel(model_name)
+    provider = (config.get('provider') or 'openai').strip().lower()
+    if provider not in SUPPORTED_PROVIDERS:
+        provider = 'openai'
+    base_url = config.get('base_url') or PROVIDER_PRESETS[provider].get('base_url', '')
+    return (
+        provider,
+        config.get('api_key', ''),
+        config.get('model') or '',
+        base_url,
+    )
+
+
+def _generate_openai(prompt, api_key, model, base_url, extra_headers=None):
+    """Calls an OpenAI-compatible chat completion API."""
+    from openai import OpenAI
+    client = OpenAI(
+        api_key=api_key,
+        base_url=base_url or None,
+        default_headers=extra_headers or None,
+    )
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{'role': 'user', 'content': prompt}],
+    )
+    return response.choices[0].message.content
+
+
+def _generate_gemini(prompt, api_key, model):
+    """Calls the Google Gemini generative API."""
+    if api_key:
+        genai.configure(api_key=api_key)
+    response = genai.GenerativeModel(model).generate_content(prompt)
+    return response.text
 
 
 def _write_credentials_from_config():
@@ -167,8 +220,13 @@ def mark_as_read(service, email_id):
         return False
 
 
-def generate_reply(email):
-    """Asks Gemini to draft a reply for this email."""
+def generate_reply(email, overrides=None):
+    """Asks the configured AI provider to draft a reply for this email.
+
+    overrides (optional): a dict with provider/api_key/model/base_url keys that
+    temporarily replaces the saved settings — used by the "Test AI key" button
+    so the pasted key is tested even before saving.
+    """
     prompt = f"""You are helping draft a short, polite email reply.
 
 Original email from: {email['sender']}
@@ -178,8 +236,37 @@ Body:
 
 Write a short, professional reply (3-5 sentences). Only output the reply text, nothing else."""
 
-    response = _get_model().generate_content(prompt)
-    return response.text.strip()
+    provider, api_key, model, base_url = get_ai_settings()
+    if overrides:
+        provider = (overrides.get('provider') or provider).strip().lower()
+        api_key = overrides.get('api_key') or api_key
+        model = overrides.get('model') or model
+        base_url = overrides.get('base_url') or base_url
+
+    if not api_key:
+        raise ValueError(
+            'No API key set. Open Settings and paste your API key.'
+        )
+    if not model:
+        raise ValueError(
+            'No model set. Open Settings and pick a model.'
+        )
+
+    if provider in ('openai', 'qwen', 'openrouter'):
+        headers = None
+        if provider == 'openrouter':
+            # Lets OpenRouter attribute/rank the app on their site.
+            headers = {
+                'HTTP-Referer': 'http://localhost:5000/',
+                'X-Title': 'Reply Desk',
+            }
+        draft = _generate_openai(prompt, api_key, model, base_url, headers)
+    elif provider == 'gemini':
+        draft = _generate_gemini(prompt, api_key, model)
+    else:
+        raise ValueError(f'Unknown provider: {provider}')
+
+    return draft.strip()
 
 
 def send_reply(service, email, reply_text):

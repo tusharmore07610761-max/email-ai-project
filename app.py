@@ -21,6 +21,7 @@ from email_assistant import (
     generate_reply,
     send_reply,
     mark_as_read,
+    SUPPORTED_PROVIDERS,
 )
 
 app = Flask(__name__)
@@ -54,7 +55,8 @@ def health():
     config = load_config()
     return jsonify({
         'ok': True,
-        'gemini_key_set': bool(config.get('gemini_api_key')),
+        'api_key_set': bool(config.get('api_key')),
+        'provider': config.get('provider', 'openai'),
         'gmail_configured': bool(config.get('gmail_credentials')) or _has_file('credentials.json'),
     })
 
@@ -63,11 +65,13 @@ def health():
 def get_settings():
     config = load_config()
     # Never send the real key back to the browser; send a masked preview.
-    key = config.get('gemini_api_key', '')
+    key = config.get('api_key', '')
     return jsonify({
-        'gemini_model': config.get('gemini_model'),
-        'gemini_key_set': bool(key),
-        'gemini_key_masked': _mask(key),
+        'provider': config.get('provider', 'openai'),
+        'model': config.get('model'),
+        'base_url': config.get('base_url', ''),
+        'api_key_set': bool(key),
+        'api_key_masked': _mask(key),
         'gmail_configured': bool(config.get('gmail_credentials')) or _has_file('credentials.json'),
         'gmail_email': _current_account(),
     })
@@ -78,14 +82,22 @@ def save_settings():
     data = request.get_json(silent=True) or {}
     config = load_config()
 
-    if 'gemini_model' in data and data['gemini_model']:
-        config['gemini_model'] = data['gemini_model'].strip()
+    provider = (data.get('provider') or '').strip().lower()
+    if provider in SUPPORTED_PROVIDERS:
+        config['provider'] = provider
+
+    model = (data.get('model') or '').strip()
+    if model:
+        config['model'] = model
+
+    base_url = (data.get('base_url') or '').strip()
+    config['base_url'] = base_url
 
     # Only overwrite the key if the user typed a new one (a blank/masked value
     # means "keep what we already have").
-    key = (data.get('gemini_api_key') or '').strip()
-    if key and key != _mask(config.get('gemini_api_key', '')):
-        config['gemini_api_key'] = key
+    key = (data.get('api_key') or '').strip()
+    if key and key != _mask(config.get('api_key', '')):
+        config['api_key'] = key
 
     gmail_creds = (data.get('gmail_credentials') or '').strip()
     if gmail_creds:
@@ -138,7 +150,12 @@ def reply():
     if not email.get('id'):
         return jsonify({'error': 'Missing email data'}), 400
     try:
-        draft = generate_reply(email)
+        overrides = {
+            k: data[k]
+            for k in ('provider', 'api_key', 'model', 'base_url')
+            if data.get(k)
+        }
+        draft = generate_reply(email, overrides or None)
     except Exception as exc:  # noqa: BLE001
         return jsonify({'error': str(exc)}), 500
     return jsonify({'id': email['id'], 'draft': draft})

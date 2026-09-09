@@ -1,5 +1,7 @@
 {
-  "gemini_api_key": "",
-  "gemini_model": "gemini-3.6-flash",
+  "provider": "openai",
+  "api_key": "",
+  "model": "gpt-4o-mini",
+  "base_url": "",
   "gmail_credentials": ""
 }

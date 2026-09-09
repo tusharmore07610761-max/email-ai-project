@@ -10,14 +10,18 @@ const fromEl = document.getElementById("mail-from");
 const bodyEl = document.getElementById("mail-body");
 const replyEl = document.getElementById("reply-text");
 const sendBtn = document.getElementById("btn-send");
+const generateBtn = document.getElementById("btn-generate");
 const skipBtn = document.getElementById("btn-skip");
 const toastEl = document.getElementById("toast");
 
 // Settings
 const settingsBtn = document.getElementById("btn-settings");
 const overlayEl = document.getElementById("settings-overlay");
-const keyInput = document.getElementById("set-gemini-key");
-const modelSelect = document.getElementById("set-gemini-model");
+const providerSelect = document.getElementById("set-provider");
+const keyInput = document.getElementById("set-api-key");
+const modelInput = document.getElementById("set-model");
+const modelSuggestions = document.getElementById("model-suggestions");
+const baseUrlInput = document.getElementById("set-base-url");
 const credsInput = document.getElementById("set-gmail-creds");
 const keyCurrentEl = document.getElementById("key-current");
 const gmailCurrentEl = document.getElementById("gmail-current");
@@ -26,9 +30,23 @@ const testKeyBtn = document.getElementById("btn-test-key");
 const reconnectBtn = document.getElementById("btn-reconnect");
 const closeSettingsBtn = document.getElementById("btn-close-settings");
 
+// Model suggestions shown per provider in the settings modal.
+const MODEL_SUGGESTIONS = {
+  openai: ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "o3-mini", "gpt-4.1"],
+  openrouter: [
+    "openai/gpt-4o-mini",
+    "openai/gpt-4o",
+    "anthropic/claude-3.5-sonnet",
+    "google/gemini-2.5-flash",
+    "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+    "nvidia/nemotron-4-340b-instruct",
+  ],
+  qwen: ["qwen-plus", "qwen-max", "qwen-turbo", "qwen2.5-72b-instruct"],
+  gemini: ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-3-flash-preview", "gemini-3.1-pro-preview"],
+};
+
 let emails = [];
 let activeId = null;
-let drafting = false;
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
@@ -53,12 +71,12 @@ function showToast(msg, isError = false) {
 async function loadInbox() {
   try {
     const health = await api("/api/health");
-    if (health.gemini_key_set) {
+    if (health.api_key_set) {
       statusEl.classList.remove("warn");
       statusEl.innerHTML = '<span class="dot"></span> Connected';
     } else {
       statusEl.classList.add("warn");
-      statusEl.innerHTML = '<span class="dot"></span> Gemini key missing — open Settings';
+      statusEl.innerHTML = '<span class="dot"></span> API key missing — open Settings';
     }
 
     emails = await api("/api/inbox");
@@ -137,27 +155,6 @@ function renderActive() {
   } else {
     replyEl.value = "";
     setButtons(false);
-    generateDraft(email);
-  }
-}
-
-async function generateDraft(email) {
-  drafting = true;
-  replyEl.placeholder = "Generating draft…";
-  try {
-    const res = await api("/api/reply", {
-      method: "POST",
-      body: JSON.stringify({ email }),
-    });
-    email.draft = res.draft;
-    replyEl.value = res.draft;
-    markBadge(email.id);
-    setButtons(true);
-  } catch (err) {
-    replyEl.placeholder = "Draft failed — try again by selecting the email.";
-    showToast(err.message, true);
-  } finally {
-    drafting = false;
   }
 }
 
@@ -173,6 +170,34 @@ function markBadge(id) {
 
 function setButtons(enabled) {
   sendBtn.disabled = !enabled;
+}
+
+async function generateActive() {
+  const email = emails.find((e) => e.id === activeId);
+  if (!email) return;
+  if (email.draft) {
+    showToast("A draft is already generated.");
+    return;
+  }
+  generateBtn.disabled = true;
+  generateBtn.textContent = "Generating…";
+  replyEl.placeholder = "Generating draft…";
+  try {
+    const res = await api("/api/reply", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+    email.draft = res.draft;
+    replyEl.value = res.draft;
+    markBadge(email.id);
+    setButtons(true);
+  } catch (err) {
+    replyEl.placeholder = "Draft failed — try again.";
+    showToast(err.message, true);
+  } finally {
+    generateBtn.disabled = false;
+    generateBtn.textContent = "Generate reply";
+  }
 }
 
 async function sendActive() {
@@ -244,14 +269,17 @@ function closeSettings() {
 async function loadSettings() {
   try {
     const s = await api("/api/settings");
+    providerSelect.value = s.provider || "openai";
+    populateModelSuggestions(s.provider || "openai");
     keyInput.value = "";
-    keyInput.placeholder = s.gemini_key_set
-      ? `Saved key (${s.gemini_key_masked}) — type to replace`
-      : "Paste your Gemini API key (starts with AIza)";
-    keyCurrentEl.innerHTML = s.gemini_key_set
-      ? `Current: ${s.gemini_key_masked}`
+    keyInput.placeholder = s.api_key_set
+      ? `Saved key (${s.api_key_masked}) — type to replace`
+      : "Paste your API key";
+    keyCurrentEl.innerHTML = s.api_key_set
+      ? `Current: ${s.api_key_masked}`
       : "Not set yet";
-    modelSelect.value = s.gemini_model || "gemini-3.6-flash";
+    modelInput.value = s.model || "";
+    baseUrlInput.value = s.base_url || "";
     credsInput.value = "";
     credsInput.placeholder = s.gmail_configured
       ? `Gmail connected${s.gmail_email ? " (" + escapeHtml(s.gmail_email) + ")" : ""} — paste new to switch`
@@ -264,10 +292,22 @@ async function loadSettings() {
   }
 }
 
+function populateModelSuggestions(provider) {
+  const models = MODEL_SUGGESTIONS[provider] || [];
+  modelSuggestions.innerHTML = models
+    .map((m) => `<option value="${escapeHtml(m)}"></option>`)
+    .join("");
+  modelInput.placeholder = models[0]
+    ? `e.g. ${models[0]}`
+    : "Type any model name";
+}
+
 async function saveSettings() {
   const payload = {
-    gemini_model: modelSelect.value,
-    gemini_api_key: keyInput.value.trim(),
+    provider: providerSelect.value,
+    api_key: keyInput.value.trim(),
+    model: modelInput.value.trim(),
+    base_url: baseUrlInput.value.trim(),
     gmail_credentials: credsInput.value.trim(),
   };
   saveSettingsBtn.disabled = true;
@@ -301,6 +341,10 @@ async function testKey() {
       method: "POST",
       body: JSON.stringify({
         email: { id: "test", sender: "test@example.com", subject: "test", body: "Hello" },
+        provider: providerSelect.value,
+        api_key: key,
+        model: modelInput.value.trim(),
+        base_url: baseUrlInput.value.trim(),
       }),
     });
     showToast("Key works ✓");
@@ -328,11 +372,13 @@ async function reconnectGmail() {
 
 sendBtn.addEventListener("click", sendActive);
 skipBtn.addEventListener("click", skipActive);
+generateBtn.addEventListener("click", generateActive);
 settingsBtn.addEventListener("click", openSettings);
 closeSettingsBtn.addEventListener("click", closeSettings);
 saveSettingsBtn.addEventListener("click", saveSettings);
 testKeyBtn.addEventListener("click", testKey);
 reconnectBtn.addEventListener("click", reconnectGmail);
+providerSelect.addEventListener("change", () => populateModelSuggestions(providerSelect.value));
 overlayEl.addEventListener("click", (e) => {
   if (e.target === overlayEl) closeSettings();
 });
